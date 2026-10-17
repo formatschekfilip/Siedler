@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<!--
+  index.html - the SKELETON of the app. It is almost empty on purpose:
+  app.js fills <div id="app"> with the current screen.
+
+  Files this page loads:  style.css (looks)  and  app.js (behavior).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Makes the page fit phone screens instead of showing a shrunken desktop page.
+     viewport-fit=cover lets it use the full screen on iPhones with a notch. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Colors the browser bar on Android. -->
+<meta name="theme-color" content="#0f6b82">
+<title>Catan Game Tracker</title>
+<!-- Dice emoji as tab icon. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🎲%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- The current screen is drawn in here by render() in app.js. -->
+<div class="wrap" id="app"></div>
+
+<!-- Bottom navigation. data-t names the tab; onclick calls go() in app.js. -->
+<nav>
+  <button data-t="board" onclick="go('board')"><i>🏆</i>Leaderboard</button>
+  <button data-t="new" onclick="go('new')"><i>➕</i>New game</button>
+  <button data-t="history" onclick="go('history')"><i>📖</i>History</button>
+</nav>
+
+<!-- Little "Game saved" message, see toast() in app.js. -->
+<div id="toast"></div>
+
+<!-- Loaded LAST so that all elements above already exist when the script starts. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

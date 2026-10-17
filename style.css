@@ -1,0 +1,95 @@
+/*
+ * style.css - how the app LOOKS.
+ *
+ * Reading CSS: "selector { property: value; }". ".card" matches every element with class="card",
+ * "#toast" matches the element with id="toast".
+ *
+ * COLORS are CSS variables (--bg, --accent, ...) defined once in :root and used everywhere as var(--bg).
+ * Change a variable and the whole app follows.
+ * DARK MODE: the second and third blocks redefine the same variables when the phone is in dark mode.
+ * SAFE AREAS: the padding on :root uses env(safe-area-inset-*) so content isn't hidden behind
+ * the iPhone notch or home bar (needs viewport-fit=cover in index.html).
+ */
+
+:root{
+  --bg:#dcebee;--surface:#ffffff;--ink:#0f2f3a;--muted:#587681;--line:#c3d8dd;--chip:#cfe3e8;
+  --accent:#0f6b82;--accent-ink:#ffffff;--token:#f4e7c5;--token-ink:#2a2118;--hot:#c0392b;--gold:#e0a526;
+  --err-bg:#f9dcd6;--err-ink:#7a1f0e;color-scheme:light;
+  box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0b2530;--surface:#123341;--ink:#e7f2f4;--muted:#8fb0ba;--line:#1f4756;--chip:#18404f;
+    --accent:#4fb3cc;--accent-ink:#06222b;--token:#f0e0b8;--token-ink:#2a2118;--hot:#d6402f;--gold:#e8b94a;
+    --err-bg:#4a1f18;--err-ink:#f9c9bf;color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0b2530;--surface:#123341;--ink:#e7f2f4;--muted:#8fb0ba;--line:#1f4756;--chip:#18404f;
+  --accent:#4fb3cc;--accent-ink:#06222b;--token:#f0e0b8;--token-ink:#2a2118;--hot:#d6402f;--gold:#e8b94a;
+  --err-bg:#4a1f18;--err-ink:#f9c9bf;color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px);-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 ui-rounded,"SF Pro Rounded",Nunito,"Segoe UI",Roboto,system-ui,sans-serif}
+/* Centered column, max 560px wide. The big bottom padding keeps content clear of the fixed navigation bar. */
+.wrap{max-width:560px;margin:0 auto;padding:18px 16px 110px}
+h1{font-size:30px;line-height:1.1;font-weight:800;margin:6px 0 6px;letter-spacing:-.02em}
+h2{font-size:16px;margin:0 0 10px}
+.lead{color:var(--muted);margin:0 0 14px;font-size:14px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px;margin:0 0 10px}
+.chips{display:flex;gap:8px;overflow-x:auto;margin:0 0 12px;padding-bottom:2px}
+.chip{border:1px solid var(--line);background:var(--chip);color:var(--ink);border-radius:999px;padding:7px 14px;font-family:inherit;font-size:14px;font-weight:700;white-space:nowrap}
+.chip.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+/* The round 'number token' used for ranks and VP, like the chips on a Catan board. .hot = red number, .sm = small, .big = large. */
+.tok{flex:none;width:44px;height:44px;border-radius:50%;background:var(--token);color:var(--token-ink);display:grid;place-items:center;font-weight:800;font-size:20px;box-shadow:inset 0 0 0 2px rgba(0,0,0,.1),0 0 0 3px var(--surface),0 0 0 4px var(--line)}
+.tok.hot{color:var(--hot)}
+.tok.sm{width:30px;height:30px;font-size:14px;box-shadow:inset 0 0 0 2px rgba(0,0,0,.1)}
+.tok.big{width:64px;height:64px;font-size:30px;margin:0 auto 10px}
+.player{display:flex;align-items:center;gap:14px}
+.grow{flex:1;min-width:0}
+.name{font-weight:800;font-size:17px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sub{color:var(--muted);font-size:13px}
+.metric{text-align:right}
+.metric b{display:block;font-size:26px;line-height:1;font-weight:800;color:var(--accent)}
+.metric span{font-size:12px;color:var(--muted)}
+label{display:block;font-size:13px;font-weight:700;color:var(--muted);margin:0 0 10px}
+/* Inputs. font-size 16px is deliberate: smaller sizes make iPhones zoom in when you tap a field. */
+.in{width:100%;display:block;margin-top:5px;padding:11px 12px;font-family:inherit;font-size:16px;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px}
+.in:focus-visible,.btn:focus-visible,.chip:focus-visible,nav button:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+.prow{display:flex;gap:8px;margin:0 0 8px;align-items:center}
+.prow .in{margin:0}
+.vp{width:84px;flex:none}
+.x{border:0;background:none;color:var(--muted);font-size:18px;padding:8px}
+.x:disabled{opacity:.3}
+.btn{border:0;border-radius:10px;padding:12px 16px;font-family:inherit;font-size:16px;font-weight:800;background:var(--accent);color:var(--accent-ink)}
+.btn.ghost{background:var(--chip);color:var(--ink)}
+.btn.full{width:100%;padding:15px;font-size:17px}
+.btn:disabled{opacity:.4}
+.err{background:var(--err-bg);color:var(--err-ink);border-radius:10px;padding:10px 12px;margin:0 0 10px;font-size:14px;font-weight:600}
+.hint{color:var(--muted);font-size:13px;margin:4px 0 0}
+.empty{text-align:center;padding:28px 16px}
+.empty p{color:var(--muted);margin:0 0 16px}
+.empty .btn{margin:4px}
+.gh{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px}
+.tag{display:inline-block;margin-left:8px;background:var(--chip);border-radius:999px;padding:2px 10px;font-size:12px;font-weight:700}
+.del{border:0;background:none;color:var(--muted);font-family:inherit;font-size:13px;padding:6px 4px}
+.del.armed{color:var(--hot);font-weight:800}
+/* One row in the history: name | bar | VP token. display:grid with three columns. */
+.res{display:grid;grid-template-columns:96px 1fr 30px;gap:10px;align-items:center;margin:6px 0}
+.res .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar{height:8px;background:var(--chip);border-radius:6px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--muted);opacity:.45}
+.win .n{font-weight:800}
+.win .bar i{background:var(--gold);opacity:1}
+.win .tok{color:var(--hot)}
+.note{color:var(--muted);font-size:14px;margin:10px 0 0}
+.foot{text-align:center;margin-top:18px;color:var(--muted);font-size:12px}
+/* Bottom navigation, fixed to the screen. env(safe-area-inset-bottom) keeps it above the iPhone home bar. */
+nav{position:fixed;left:0;right:0;bottom:0;display:flex;background:var(--surface);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px);z-index:5}
+nav button{flex:1;border:0;background:none;color:var(--muted);padding:9px 0 8px;font-family:inherit;font-size:12px;font-weight:700}
+nav i{display:block;font-style:normal;font-size:21px;line-height:1.2}
+nav .on{color:var(--accent)}
+/* The little 'Game saved' message. Hidden (opacity 0) until JavaScript adds the class 'show'. */
+#toast{position:fixed;left:50%;bottom:calc(76px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:999px;font-weight:700;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:9}
+#toast.show{opacity:1}
