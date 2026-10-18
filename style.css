@@ -93,3 +93,9 @@ nav .on{color:var(--accent)}
 /* The little 'Game saved' message. Hidden (opacity 0) until JavaScript adds the class 'show'. */
 #toast{position:fixed;left:50%;bottom:calc(76px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:999px;font-weight:700;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:9}
 #toast.show{opacity:1}
+
+/* Filter dropdown on Leaderboard and History: "Show [All expansions v]" on one line. */
+.filter{display:flex;align-items:center;gap:10px;margin:0 0 12px}
+.filter .in{margin:0;flex:1}
+/* Edit and Delete buttons side by side in a history card. */
+.acts{display:flex;gap:6px}
