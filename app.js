@@ -246,11 +246,15 @@ function renderNew() {
     <input class="in vp" type="number" inputmode="numeric" min="0" max="30" placeholder="VP" value="${esc(r.vp)}" oninput="rows[${i}].vp=this.value">
     <button class="x" aria-label="Remove player ${i + 1}" onclick="rmRow(${i})" ${rows.length <= 3 ? 'disabled' : ''}>✕</button></div>`).join('');
   // Shows the new photo, else the one saved with the game. Both are optional.
+  // Two hidden file inputs: the one with capture="environment" opens the back camera directly,
+  // the other one opens the gallery / file chooser. The visible buttons just click them.
   const pv = draft.photoFile ? draft.photoPreview : (draft.photoPath ? photoUrl(draft.photoPath) : '');
   const photoCard = `<div class="card"><h2>Photo of the finished board (optional)</h2>
     ${pv ? `<img class="photo" src="${esc(pv)}" alt="Selected board photo" style="cursor:default">` : ''}
-    <input type="file" id="photoInput" accept="image/*" hidden onchange="pickPhoto(this)">
-    <div class="prow" style="margin:10px 0 0"><button class="btn ghost" onclick="$('photoInput').click()">${pv ? 'Change photo' : 'Add photo'}</button>
+    <input type="file" id="photoCam" accept="image/*" capture="environment" hidden onchange="pickPhoto(this)">
+    <input type="file" id="photoPick" accept="image/*" hidden onchange="pickPhoto(this)">
+    <div class="prow" style="margin:10px 0 0;flex-wrap:wrap"><button class="btn ghost" onclick="$('photoCam').click()">Take photo</button>
+    <button class="btn ghost" onclick="$('photoPick').click()">Choose from gallery</button>
     ${pv ? '<button class="btn ghost" onclick="removePhoto()">Remove</button>' : ''}</div></div>`;
   const choices = EXPS.includes(draft.exp) ? EXPS : [...EXPS, draft.exp];   // keeps unusual old values selectable
   const opts = choices.map(e => `<option ${e === draft.exp ? 'selected' : ''}>${esc(e)}</option>`).join('');
