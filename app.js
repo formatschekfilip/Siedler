@@ -40,22 +40,46 @@ async function loadGames() {
   }));
 }
 
-// A game touches three tables: new names go into players, then games, then results.
-async function addGame(game) {
-  const wanted = game.results.map(r => r.name);
+// Makes sure every name exists in the players table and returns { name: id }.
+async function playerIds(wanted) {
   let players = check(await db.from('players').select('id, name'));
   const missing = wanted.filter(n => !players.some(p => p.name === n));
   if (missing.length) {
     check(await db.from('players').insert(missing.map(name => ({ name }))));
     players = check(await db.from('players').select('id, name'));
   }
+  return Object.fromEntries(players.map(p => [p.name, p.id]));
+}
+// Turns [{name, vp}] into rows for the results table.
+const resultRows = (gameId, results, ids) => results.map(r => ({ game_id: gameId, player_id: ids[r.name], vp: r.vp }));
+
+// A game touches three tables: new names go into players, then games, then results.
+async function addGame(game) {
+  const ids = await playerIds(game.results.map(r => r.name));
   const g = check(await db.from('games')
     .insert({ played_on: game.date, expansion: game.expansion, notes: game.notes })
     .select().single());
-  const res = await db.from('results').insert(game.results.map(r => ({
-    game_id: g.id, player_id: players.find(p => p.name === r.name).id, vp: r.vp })));
+  const res = await db.from('results').insert(resultRows(g.id, game.results, ids));
   if (res.error) {                       // undo the half-saved game
     await db.from('games').delete().eq('id', g.id);
+    throw res.error;
+  }
+}
+
+// Editing = update the game row, then replace its results (delete + insert).
+// `old` is the previous version, used to put the old results back if the insert fails.
+// Needs an UPDATE policy on the games table (see README). Without it Supabase changes
+// 0 rows and reports no error, so we check how many rows came back.
+async function updateGame(id, game, old) {
+  const ids = await playerIds([...game.results, ...old.results].map(r => r.name));
+  const upd = check(await db.from('games')
+    .update({ played_on: game.date, expansion: game.expansion, notes: game.notes })
+    .eq('id', id).select());
+  if (!upd.length) throw new Error('Editing is not allowed yet (missing update policy in Supabase)');
+  check(await db.from('results').delete().eq('game_id', id));
+  const res = await db.from('results').insert(resultRows(id, game.results, ids));
+  if (res.error) {
+    await db.from('results').insert(resultRows(id, old.results, ids));
     throw res.error;
   }
 }
@@ -87,8 +111,10 @@ function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add
 /* ============================================================
    3. STATE - the variables that describe the app right now
    ============================================================
-   data    = the games last loaded from the database: { games: [...] }
-   saving  = true while a game is being saved (ignores double taps)
+   data      = the games last loaded from the database: { games: [...] }
+   saving    = true while a game is being saved (ignores double taps)
+   editingId = id of the game being edited, or null when adding a new game
+   expFilter = 'all' or an expansion name; Leaderboard and History both show only matching games
    The rest only lives on screen and is lost on reload: current tab, sort mode,
    the new-game form (rows + draft), the last error and which delete button is armed.
 
@@ -96,17 +122,22 @@ function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add
    onchange="draft.exp=..." look at the element first, and every input/select already has a
    built-in property called `form` (its parent <form>), which would hide our variable. */
 let data = { games: [] }, tab = 'board', sortBy = 'wins', saving = false;
-let rows = blankRows(), draft = { date: today(), exp: EXPS[0], notes: '' }, formErr = '', armed = null;
+const freshDraft = () => ({ date: today(), exp: EXPS[0], notes: '' });
+let rows = blankRows(), draft = freshDraft(), formErr = '', armed = null, editingId = null, expFilter = 'all';
 
 /* ============================================================
    4. STATISTICS - calculated from the game list every time, never stored
    ============================================================
    Fixing a typo in one game therefore corrects the whole leaderboard. */
-// One entry per player: games, wins, VP total, win rate, average VP.
+// Games matching the expansion filter ('all' = everything). Leaderboard and History both use this.
+const filtered = () => expFilter === 'all' ? data.games : data.games.filter(g => g.expansion === expFilter);
+// Expansions that occur in saved games (dropdown order first, unknown ones after), for the filter dropdown.
+const usedExps = () => { const u = new Set(data.games.map(g => g.expansion)); return [...EXPS.filter(e => u.has(e)), ...[...u].filter(e => !EXPS.includes(e))]; };
+// One entry per player (counting only the filtered games): games, wins, VP total, win rate, average VP.
 // A win = having the highest VP in a game (if two players tie, both count).
 function stats() {
   const m = {};
-  data.games.forEach(g => {
+  filtered().forEach(g => {
     const top = Math.max(...g.results.map(r => r.vp));
     g.results.forEach(r => {
       const s = m[r.name] ??= { name: r.name, games: 0, wins: 0, vp: 0 };
@@ -141,12 +172,24 @@ function emptyCard() {
   <button class="btn" onclick="go('new')">Add first game</button></div>`;
 }
 
+// Shown when a filter matches no games.
+const noMatch = () => '<div class="card empty"><p>No games with this expansion yet.</p></div>';
+
+// Dropdown at the top of Leaderboard and History. Changing it redraws with the filtered games.
+function filterBar() {
+  const list = ['all', ...usedExps()];
+  if (!list.includes(expFilter)) list.push(expFilter);
+  const opts = list.map(e => `<option value="${esc(e)}" ${e === expFilter ? 'selected' : ''}>${e === 'all' ? 'All expansions' : esc(e)}</option>`).join('');
+  return `<label class="filter">Show<select class="in" onchange="expFilter=this.value;render()">${opts}</select></label>`;
+}
+
 // Screen 1: the leaderboard.
 function renderBoard() {
-  const s = stats();
-  if (!s.length) return emptyCard();
+  if (!data.games.length) return emptyCard();
+  const games = filtered(), s = stats();
+  if (!s.length) return filterBar() + noMatch();
   s.sort(sorters[sortBy]);
-  const last = [...data.games].sort((a, b) => b.date.localeCompare(a.date))[0].date;
+  const last = [...games].sort((a, b) => b.date.localeCompare(a.date))[0].date;
   const chips = [['wins', 'Wins'], ['rate', 'Win %'], ['avg', 'Avg VP']]
     .map(([k, l]) => `<button class="chip ${sortBy === k ? 'on' : ''}" onclick="sortBy='${k}';render()">${l}</button>`).join('');
   const list = s.map((p, i) => {
@@ -155,12 +198,12 @@ function renderBoard() {
     <div class="grow"><div class="name">${esc(p.name)}</div><div class="sub">${p.wins} of ${p.games} games won, avg ${p.avg.toFixed(1)} VP</div></div>
     <div class="metric"><b>${v}</b><span>${label}</span></div></div>`;
   }).join('');
-  return `<p class="lead">${data.games.length} games logged, latest on ${fmt(last)}</p>
-  <div class="chips">${chips}</div>${list}
-  <p class="foot">In this preview, games are saved on this phone only.</p>`;
+  const what = expFilter === 'all' ? 'logged' : 'of ' + esc(expFilter);
+  return `<p class="lead">${games.length} ${games.length === 1 ? 'game' : 'games'} ${what}, latest on ${fmt(last)}</p>
+  ${filterBar()}<div class="chips">${chips}</div>${list}`;
 }
 
-// Screen 2: new-game form. The oninput/onchange attributes copy what you type into `rows` and `draft`
+// Screen 2: new-game form. The same form is used for editing (editingId is set then). The oninput/onchange attributes copy what you type into `rows` and `draft`
 // immediately, so re-rendering never loses your input.
 function renderNew() {
   const dl = `<datalist id="names">${names().map(n => `<option value="${esc(n)}">`).join('')}</datalist>`;
@@ -168,7 +211,8 @@ function renderNew() {
     <input class="in grow" list="names" placeholder="Player ${i + 1}" autocomplete="off" value="${esc(r.name)}" oninput="rows[${i}].name=this.value">
     <input class="in vp" type="number" inputmode="numeric" min="0" max="30" placeholder="VP" value="${esc(r.vp)}" oninput="rows[${i}].vp=this.value">
     <button class="x" aria-label="Remove player ${i + 1}" onclick="rmRow(${i})" ${rows.length <= 3 ? 'disabled' : ''}>✕</button></div>`).join('');
-  const opts = EXPS.map(e => `<option ${e === draft.exp ? 'selected' : ''}>${esc(e)}</option>`).join('');
+  const choices = EXPS.includes(draft.exp) ? EXPS : [...EXPS, draft.exp];   // keeps unusual old values selectable
+  const opts = choices.map(e => `<option ${e === draft.exp ? 'selected' : ''}>${esc(e)}</option>`).join('');
   return `<div class="card">
     <label>Date<input class="in" type="date" value="${draft.date}" onchange="draft.date=this.value"></label>
     <label style="margin:0">Expansion<select class="in" onchange="draft.exp=this.value">${opts}</select></label></div>
@@ -178,29 +222,34 @@ function renderNew() {
     <textarea class="in" rows="2" placeholder="House rules, longest road drama, …" oninput="draft.notes=this.value">${esc(draft.notes)}</textarea></label>
     <p class="hint">Photos of the final board will come in a later version.</p></div>
   ${formErr ? `<div class="err">${esc(formErr)}</div>` : ''}
-  <button class="btn full" onclick="saveGame()">Save game</button>`;
+  <button class="btn full" onclick="saveGame()" ${saving ? 'disabled' : ''}>${editingId ? 'Save changes' : 'Save game'}</button>
+  ${editingId ? '<button class="btn ghost full" style="margin-top:10px" onclick="cancelEdit()">Cancel</button>' : ''}`;
 }
 
-// Screen 3: all games, newest first. Deleting needs two taps to prevent accidents.
+// Screen 3: games (filtered), newest first. Deleting needs two taps to prevent accidents.
 function renderHistory() {
   if (!data.games.length) return emptyCard();
-  const g = [...data.games].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
+  const games = filtered();
+  if (!games.length) return filterBar() + noMatch();
+  const g = [...games].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
   const cards = g.map(x => {
     const top = Math.max(...x.results.map(r => r.vp));
     const res = x.results.map(r => `<div class="res ${r.vp === top ? 'win' : ''}">
       <span class="n">${esc(r.name)}</span><div class="bar"><i style="width:${Math.min(100, r.vp * 10)}%"></i></div>
       <span class="tok sm">${r.vp}</span></div>`).join('');
     return `<div class="card"><div class="gh"><div><b>${fmt(x.date)}</b><span class="tag">${esc(x.expansion)}</span></div>
-      <button class="del ${armed === x.id ? 'armed' : ''}" onclick="del(${x.id})">${armed === x.id ? 'Tap again to delete' : 'Delete'}</button></div>
+      <div class="acts"><button class="del" onclick="startEdit(${x.id})">Edit</button>
+      <button class="del ${armed === x.id ? 'armed' : ''}" onclick="del(${x.id})">${armed === x.id ? 'Tap again to delete' : 'Delete'}</button></div></div>
       ${res}${x.notes ? `<p class="note">${esc(x.notes)}</p>` : ''}</div>`;
   }).join('');
-  return `<p class="lead">Newest first</p>${cards}
-  <p class="foot"><button class="del ${armed === 'all' ? 'armed' : ''}" onclick="del('all')">${armed === 'all' ? 'Tap again to erase everything' : 'Erase all games'}</button></p>`;
+  // "Erase all" only appears without a filter, so it can't be mistaken for "erase the filtered games".
+  const erase = expFilter !== 'all' ? '' : `<p class="foot"><button class="del ${armed === 'all' ? 'armed' : ''}" onclick="del('all')">${armed === 'all' ? 'Tap again to erase everything' : 'Erase all games'}</button></p>`;
+  return `${filterBar()}<p class="lead">${games.length} ${games.length === 1 ? 'game' : 'games'}, newest first</p>${cards}${erase}`;
 }
 
 // Rebuilds the visible screen from the current state. Call it after ANY change to the state.
 function render() {
-  const titles = { board: 'Leaderboard', new: 'New game', history: 'Game history' };
+  const titles = { board: 'Leaderboard', new: editingId ? 'Edit game' : 'New game', history: 'Game history' };
   const body = { board: renderBoard, new: renderNew, history: renderHistory }[tab]();
   $('app').innerHTML = `<h1>${titles[tab]}</h1>${body}`;
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
@@ -211,7 +260,7 @@ function render() {
    ============================================================
    Pattern: write to the database (await) -> reload data.games -> render(). */
 // Switch tab (called by the bottom navigation).
-function go(t) { tab = t; formErr = ''; render(); window.scrollTo(0, 0); if (t !== 'new') refresh(); }
+function go(t) { if (editingId && t !== 'new') resetForm(); tab = t; formErr = ''; render(); window.scrollTo(0, 0); if (t !== 'new') refresh(); }
 
 // Reloads the games from the database and redraws. Called at start and whenever you open
 // Leaderboard or History, so games added by friends show up.
@@ -220,6 +269,21 @@ async function refresh() {
   catch (e) { toast('Could not load games'); console.error(e); }
   render();
 }
+// Empties the form and leaves edit mode.
+function resetForm() { editingId = null; rows = blankRows(); draft = freshDraft(); formErr = ''; }
+
+// Edit = open the form filled with the game's current values. Saving then calls updateGame().
+function startEdit(id) {
+  const g = data.games.find(x => x.id === id);
+  if (!g) return;
+  editingId = id;
+  rows = g.results.map(r => ({ name: r.name, vp: String(r.vp) }));
+  while (rows.length < 3) rows.push({ name: '', vp: '' });
+  draft = { date: g.date, exp: g.expansion, notes: g.notes };
+  formErr = ''; tab = 'new'; render(); window.scrollTo(0, 0);
+}
+function cancelEdit() { resetForm(); go('history'); }
+
 function addRow() { if (rows.length < 6) { rows.push({ name: '', vp: '' }); render(); } }
 function rmRow(i) { if (rows.length > 3) { rows.splice(i, 1); render(); } }
 
@@ -232,22 +296,26 @@ function validate(res) {
   for (const r of res) { const k = r.name.toLowerCase(); if (seen.has(k)) return r.name + ' appears twice. Each player can only be listed once.'; seen.add(k); }
   return '';
 }
-// Validate -> save to the database -> reload -> jump to History.
+// Validate -> save (new game or edited game) to the database -> reload -> jump to History.
 async function saveGame() {
   if (saving) return;
   const res = rows.map(r => ({ name: canon(r.name.trim()), vp: parseInt(r.vp, 10) })).filter(r => r.name || !isNaN(r.vp));
   formErr = validate(res);
   if (formErr) { render(); return; }
+  const wasEdit = editingId !== null;
   saving = true;
   try {
-    await addGame({ date: draft.date || today(), expansion: draft.exp, notes: draft.notes.trim(), results: res });
+    const game = { date: draft.date || today(), expansion: draft.exp, notes: draft.notes.trim(), results: res };
+    if (wasEdit) await updateGame(editingId, game, data.games.find(x => x.id === editingId));
+    else await addGame(game);
     data.games = await loadGames();
   } catch (e) {
     saving = false; formErr = 'Could not save: ' + e.message; render(); return;
   }
   saving = false;
-  rows = blankRows(); draft.notes = ''; tab = 'history'; render(); window.scrollTo(0, 0);
-  toast('Game saved');
+  if (wasEdit) resetForm(); else { rows = blankRows(); draft.notes = ''; }
+  tab = 'history'; render(); window.scrollTo(0, 0);
+  toast(wasEdit ? 'Changes saved' : 'Game saved');
 }
 
 // 1st tap 'arms' the button (red for 3 seconds), 2nd tap deletes. id === 'all' erases everything.
