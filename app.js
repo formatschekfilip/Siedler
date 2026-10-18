@@ -90,9 +90,13 @@
       data    = the games last loaded from the database: { games: [...] }
       saving  = true while a game is being saved (ignores double taps)
       The rest only lives on screen and is lost on reload: current tab, sort mode,
-      the new-game form (rows + form), the last error and which delete button is armed. */
+      the new-game form (rows + draft), the last error and which delete button is armed.
+   
+      NOTE: the form variable is called `draft`, not `form`, on purpose. Inline handlers such as
+      onchange="draft.exp=..." look at the element first, and every input/select already has a
+      built-in property called `form` (its parent <form>), which would hide our variable. */
    let data = { games: [] }, tab = 'board', sortBy = 'wins', saving = false;
-   let rows = blankRows(), form = { date: today(), exp: EXPS[0], notes: '' }, formErr = '', armed = null;
+   let rows = blankRows(), draft = { date: today(), exp: EXPS[0], notes: '' }, formErr = '', armed = null;
    
    /* ============================================================
       4. STATISTICS - calculated from the game list every time, never stored
@@ -156,7 +160,7 @@
      <p class="foot">In this preview, games are saved on this phone only.</p>`;
    }
    
-   // Screen 2: new-game form. The oninput/onchange attributes copy what you type into `rows` and `form`
+   // Screen 2: new-game form. The oninput/onchange attributes copy what you type into `rows` and `draft`
    // immediately, so re-rendering never loses your input.
    function renderNew() {
      const dl = `<datalist id="names">${names().map(n => `<option value="${esc(n)}">`).join('')}</datalist>`;
@@ -164,14 +168,14 @@
        <input class="in grow" list="names" placeholder="Player ${i + 1}" autocomplete="off" value="${esc(r.name)}" oninput="rows[${i}].name=this.value">
        <input class="in vp" type="number" inputmode="numeric" min="0" max="30" placeholder="VP" value="${esc(r.vp)}" oninput="rows[${i}].vp=this.value">
        <button class="x" aria-label="Remove player ${i + 1}" onclick="rmRow(${i})" ${rows.length <= 3 ? 'disabled' : ''}>✕</button></div>`).join('');
-     const opts = EXPS.map(e => `<option ${e === form.exp ? 'selected' : ''}>${esc(e)}</option>`).join('');
+     const opts = EXPS.map(e => `<option ${e === draft.exp ? 'selected' : ''}>${esc(e)}</option>`).join('');
      return `<div class="card">
-       <label>Date<input class="in" type="date" value="${form.date}" onchange="form.date=this.value"></label>
-       <label style="margin:0">Expansion<select class="in" onchange="form.exp=this.value">${opts}</select></label></div>
+       <label>Date<input class="in" type="date" value="${draft.date}" onchange="draft.date=this.value"></label>
+       <label style="margin:0">Expansion<select class="in" onchange="draft.exp=this.value">${opts}</select></label></div>
      <div class="card"><h2>Players and victory points</h2>${dl}${rs}
        <button class="btn ghost" onclick="addRow()" ${rows.length >= 6 ? 'disabled' : ''}>Add player</button></div>
      <div class="card"><label style="margin:0">Notes (optional)
-       <textarea class="in" rows="2" placeholder="House rules, longest road drama, …" oninput="form.notes=this.value">${esc(form.notes)}</textarea></label>
+       <textarea class="in" rows="2" placeholder="House rules, longest road drama, …" oninput="draft.notes=this.value">${esc(draft.notes)}</textarea></label>
        <p class="hint">Photos of the final board will come in a later version.</p></div>
      ${formErr ? `<div class="err">${esc(formErr)}</div>` : ''}
      <button class="btn full" onclick="saveGame()">Save game</button>`;
@@ -236,13 +240,13 @@
      if (formErr) { render(); return; }
      saving = true;
      try {
-       await addGame({ date: form.date || today(), expansion: form.exp, notes: form.notes.trim(), results: res });
+       await addGame({ date: draft.date || today(), expansion: draft.exp, notes: draft.notes.trim(), results: res });
        data.games = await loadGames();
      } catch (e) {
        saving = false; formErr = 'Could not save: ' + e.message; render(); return;
      }
      saving = false;
-     rows = blankRows(); form.notes = ''; tab = 'history'; render(); window.scrollTo(0, 0);
+     rows = blankRows(); draft.notes = ''; tab = 'history'; render(); window.scrollTo(0, 0);
      toast('Game saved');
    }
    
