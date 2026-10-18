@@ -30,12 +30,12 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY);
 function check(res) { if (res.error) throw res.error; return res.data; }
 
 // Loads all games with their results and player names in ONE request, then converts them
-// to the shape the screens and stats() already use: { id, date, expansion, notes, results: [{name, vp}] }.
+// to the shape the screens and stats() already use: { id, date, expansion, notes, photo, results: [{name, vp}] }.
 async function loadGames() {
   const rows = check(await db.from('games')
-    .select('id, played_on, expansion, notes, results(vp, players(name))'));
+    .select('id, played_on, expansion, notes, photo_path, results(vp, players(name))'));
   return rows.map(g => ({
-    id: g.id, date: g.played_on, expansion: g.expansion, notes: g.notes || '',
+    id: g.id, date: g.played_on, expansion: g.expansion, notes: g.notes || '', photo: g.photo_path || null,
     results: g.results.map(r => ({ name: r.players.name, vp: r.vp })).sort((a, b) => b.vp - a.vp)
   }));
 }
@@ -57,7 +57,7 @@ const resultRows = (gameId, results, ids) => results.map(r => ({ game_id: gameId
 async function addGame(game) {
   const ids = await playerIds(game.results.map(r => r.name));
   const g = check(await db.from('games')
-    .insert({ played_on: game.date, expansion: game.expansion, notes: game.notes })
+    .insert({ played_on: game.date, expansion: game.expansion, notes: game.notes, photo_path: game.photo })
     .select().single());
   const res = await db.from('results').insert(resultRows(g.id, game.results, ids));
   if (res.error) {                       // undo the half-saved game
@@ -73,7 +73,7 @@ async function addGame(game) {
 async function updateGame(id, game, old) {
   const ids = await playerIds([...game.results, ...old.results].map(r => r.name));
   const upd = check(await db.from('games')
-    .update({ played_on: game.date, expansion: game.expansion, notes: game.notes })
+    .update({ played_on: game.date, expansion: game.expansion, notes: game.notes, photo_path: game.photo })
     .eq('id', id).select());
   if (!upd.length) throw new Error('Editing is not allowed yet (missing update policy in Supabase)');
   check(await db.from('results').delete().eq('game_id', id));
@@ -83,6 +83,37 @@ async function updateGame(id, game, old) {
     throw res.error;
   }
 }
+
+// ---- Photos: stored as files in the Supabase Storage bucket below; the games table only keeps the file name ----
+const BUCKET = 'board-photos';
+
+// Phone photos are 3-10 MB. Shrink to max 1600 px as JPEG (about 300 KB) before uploading:
+// the page uses the browser's canvas (a drawing surface) to redraw the image smaller.
+async function shrinkImage(file, max = 1600) {
+  let bmp;
+  try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); }   // respects the phone's rotation
+  catch (e) { bmp = await createImageBitmap(file); }
+  const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  return new Promise((ok, fail) => c.toBlob(b => b ? ok(b) : fail(new Error('Could not process the image')), 'image/jpeg', 0.82));
+}
+// Uploads under a unique name (so nothing is ever overwritten) and returns that name.
+async function uploadPhoto(blob) {
+  const path = Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.jpg';
+  const { error } = await db.storage.from(BUCKET).upload(path, blob, { contentType: 'image/jpeg' });
+  if (error) throw error;
+  return path;
+}
+// Best effort: a leftover file is harmless, so failures are only logged.
+async function removePhotos(paths) {
+  paths = paths.filter(Boolean);
+  if (!paths.length) return;
+  const { error } = await db.storage.from(BUCKET).remove(paths);
+  if (error) console.warn('Could not remove photo files', error);
+}
+const photoUrl = path => db.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
 
 // Results are removed automatically (the table has "on delete cascade").
 async function deleteGame(id) { check(await db.from('games').delete().eq('id', id)); }
@@ -114,6 +145,7 @@ function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add
    data      = the games last loaded from the database: { games: [...] }
    saving    = true while a game is being saved (ignores double taps)
    editingId = id of the game being edited, or null when adding a new game
+   photoView = URL of the photo shown full screen, or ''
    expFilter = 'all' or an expansion name; Leaderboard and History both show only matching games
    The rest only lives on screen and is lost on reload: current tab, sort mode,
    the new-game form (rows + draft), the last error and which delete button is armed.
@@ -122,8 +154,10 @@ function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add
    onchange="draft.exp=..." look at the element first, and every input/select already has a
    built-in property called `form` (its parent <form>), which would hide our variable. */
 let data = { games: [] }, tab = 'board', sortBy = 'wins', saving = false;
-const freshDraft = () => ({ date: today(), exp: EXPS[0], notes: '' });
-let rows = blankRows(), draft = freshDraft(), formErr = '', armed = null, editingId = null, expFilter = 'all';
+// photoFile = newly chosen (already shrunk) image, photoPreview = temporary URL to show it,
+// photoPath = file name of the photo already saved with the game (when editing).
+const freshDraft = () => ({ date: today(), exp: EXPS[0], notes: '', photoFile: null, photoPreview: '', photoPath: '' });
+let rows = blankRows(), draft = freshDraft(), formErr = '', armed = null, editingId = null, expFilter = 'all', photoView = '';
 
 /* ============================================================
    4. STATISTICS - calculated from the game list every time, never stored
@@ -211,6 +245,13 @@ function renderNew() {
     <input class="in grow" list="names" placeholder="Player ${i + 1}" autocomplete="off" value="${esc(r.name)}" oninput="rows[${i}].name=this.value">
     <input class="in vp" type="number" inputmode="numeric" min="0" max="30" placeholder="VP" value="${esc(r.vp)}" oninput="rows[${i}].vp=this.value">
     <button class="x" aria-label="Remove player ${i + 1}" onclick="rmRow(${i})" ${rows.length <= 3 ? 'disabled' : ''}>✕</button></div>`).join('');
+  // Shows the new photo, else the one saved with the game. Both are optional.
+  const pv = draft.photoFile ? draft.photoPreview : (draft.photoPath ? photoUrl(draft.photoPath) : '');
+  const photoCard = `<div class="card"><h2>Photo of the finished board (optional)</h2>
+    ${pv ? `<img class="photo" src="${esc(pv)}" alt="Selected board photo" style="cursor:default">` : ''}
+    <input type="file" id="photoInput" accept="image/*" hidden onchange="pickPhoto(this)">
+    <div class="prow" style="margin:10px 0 0"><button class="btn ghost" onclick="$('photoInput').click()">${pv ? 'Change photo' : 'Add photo'}</button>
+    ${pv ? '<button class="btn ghost" onclick="removePhoto()">Remove</button>' : ''}</div></div>`;
   const choices = EXPS.includes(draft.exp) ? EXPS : [...EXPS, draft.exp];   // keeps unusual old values selectable
   const opts = choices.map(e => `<option ${e === draft.exp ? 'selected' : ''}>${esc(e)}</option>`).join('');
   return `<div class="card">
@@ -220,9 +261,10 @@ function renderNew() {
     <button class="btn ghost" onclick="addRow()" ${rows.length >= 6 ? 'disabled' : ''}>Add player</button></div>
   <div class="card"><label style="margin:0">Notes (optional)
     <textarea class="in" rows="2" placeholder="House rules, longest road drama, …" oninput="draft.notes=this.value">${esc(draft.notes)}</textarea></label>
-    <p class="hint">Photos of the final board will come in a later version.</p></div>
+    </div>
+  ${photoCard}
   ${formErr ? `<div class="err">${esc(formErr)}</div>` : ''}
-  <button class="btn full" onclick="saveGame()" ${saving ? 'disabled' : ''}>${editingId ? 'Save changes' : 'Save game'}</button>
+  <button class="btn full" onclick="saveGame()" ${saving ? 'disabled' : ''}>${saving ? 'Saving…' : editingId ? 'Save changes' : 'Save game'}</button>
   ${editingId ? '<button class="btn ghost full" style="margin-top:10px" onclick="cancelEdit()">Cancel</button>' : ''}`;
 }
 
@@ -240,7 +282,7 @@ function renderHistory() {
     return `<div class="card"><div class="gh"><div><b>${fmt(x.date)}</b><span class="tag">${esc(x.expansion)}</span></div>
       <div class="acts"><button class="del" onclick="startEdit(${x.id})">Edit</button>
       <button class="del ${armed === x.id ? 'armed' : ''}" onclick="del(${x.id})">${armed === x.id ? 'Tap again to delete' : 'Delete'}</button></div></div>
-      ${res}${x.notes ? `<p class="note">${esc(x.notes)}</p>` : ''}</div>`;
+      ${res}${x.photo ? `<img class="photo" loading="lazy" src="${esc(photoUrl(x.photo))}" alt="Photo of the finished board" onclick="showPhoto(${x.id})">` : ''}${x.notes ? `<p class="note">${esc(x.notes)}</p>` : ''}</div>`;
   }).join('');
   // "Erase all" only appears without a filter, so it can't be mistaken for "erase the filtered games".
   const erase = expFilter !== 'all' ? '' : `<p class="foot"><button class="del ${armed === 'all' ? 'armed' : ''}" onclick="del('all')">${armed === 'all' ? 'Tap again to erase everything' : 'Erase all games'}</button></p>`;
@@ -251,7 +293,8 @@ function renderHistory() {
 function render() {
   const titles = { board: 'Leaderboard', new: editingId ? 'Edit game' : 'New game', history: 'Game history' };
   const body = { board: renderBoard, new: renderNew, history: renderHistory }[tab]();
-  $('app').innerHTML = `<h1>${titles[tab]}</h1>${body}`;
+  const box = photoView ? `<div class="lightbox" onclick="photoView='';render()"><img src="${esc(photoView)}" alt="Photo of the finished board"></div>` : '';
+  $('app').innerHTML = `<h1>${titles[tab]}</h1>${body}${box}`;
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
 }
 
@@ -270,7 +313,7 @@ async function refresh() {
   render();
 }
 // Empties the form and leaves edit mode.
-function resetForm() { editingId = null; rows = blankRows(); draft = freshDraft(); formErr = ''; }
+function resetForm() { dropNewPhoto(); editingId = null; rows = blankRows(); draft = freshDraft(); formErr = ''; }
 
 // Edit = open the form filled with the game's current values. Saving then calls updateGame().
 function startEdit(id) {
@@ -279,10 +322,29 @@ function startEdit(id) {
   editingId = id;
   rows = g.results.map(r => ({ name: r.name, vp: String(r.vp) }));
   while (rows.length < 3) rows.push({ name: '', vp: '' });
-  draft = { date: g.date, exp: g.expansion, notes: g.notes };
+  dropNewPhoto();
+  draft = { date: g.date, exp: g.expansion, notes: g.notes, photoFile: null, photoPreview: '', photoPath: g.photo || '' };
   formErr = ''; tab = 'new'; render(); window.scrollTo(0, 0);
 }
 function cancelEdit() { resetForm(); go('history'); }
+
+// Forgets a newly chosen (not yet uploaded) photo.
+function dropNewPhoto() { if (draft.photoPreview) URL.revokeObjectURL(draft.photoPreview); draft.photoFile = null; draft.photoPreview = ''; }
+
+// Called when a photo is picked: shrink it, remember it in the draft, redraw with a preview.
+async function pickPhoto(input) {
+  const f = input.files && input.files[0];
+  if (!f) return;
+  try {
+    const blob = await shrinkImage(f);
+    dropNewPhoto();
+    draft.photoFile = blob; draft.photoPreview = URL.createObjectURL(blob);
+    render();
+  } catch (e) { toast('Could not read that photo'); console.error(e); }
+}
+// Remove: first drops a newly chosen photo; if there is none, drops the saved one.
+function removePhoto() { if (draft.photoFile) dropNewPhoto(); else draft.photoPath = ''; render(); }
+function showPhoto(id) { const g = data.games.find(x => x.id === id); if (g && g.photo) { photoView = photoUrl(g.photo); render(); } }
 
 function addRow() { if (rows.length < 6) { rows.push({ name: '', vp: '' }); render(); } }
 function rmRow(i) { if (rows.length > 3) { rows.splice(i, 1); render(); } }
@@ -303,17 +365,25 @@ async function saveGame() {
   formErr = validate(res);
   if (formErr) { render(); return; }
   const wasEdit = editingId !== null;
-  saving = true;
+  saving = true; render();
+  let uploaded = null;
   try {
-    const game = { date: draft.date || today(), expansion: draft.exp, notes: draft.notes.trim(), results: res };
-    if (wasEdit) await updateGame(editingId, game, data.games.find(x => x.id === editingId));
-    else await addGame(game);
+    let photo = draft.photoPath || null;                      // saved photo, unless removed
+    if (draft.photoFile) uploaded = photo = await uploadPhoto(draft.photoFile);
+    const game = { date: draft.date || today(), expansion: draft.exp, notes: draft.notes.trim(), photo, results: res };
+    if (wasEdit) {
+      const old = data.games.find(x => x.id === editingId);
+      await updateGame(editingId, game, old);
+      uploaded = null;
+      if (old.photo && old.photo !== photo) removePhotos([old.photo]);   // replaced or removed
+    } else { await addGame(game); uploaded = null; }
     data.games = await loadGames();
   } catch (e) {
+    if (uploaded) removePhotos([uploaded]);                  // the game was not saved, so drop the upload
     saving = false; formErr = 'Could not save: ' + e.message; render(); return;
   }
   saving = false;
-  if (wasEdit) resetForm(); else { rows = blankRows(); draft.notes = ''; }
+  if (wasEdit) resetForm(); else { rows = blankRows(); draft.notes = ''; dropNewPhoto(); }
   tab = 'history'; render(); window.scrollTo(0, 0);
   toast(wasEdit ? 'Changes saved' : 'Game saved');
 }
@@ -323,7 +393,9 @@ async function del(id) {
   if (armed === id) {
     armed = null;
     try {
+      const paths = id === 'all' ? data.games.map(g => g.photo) : data.games.filter(g => g.id === id).map(g => g.photo);
       if (id === 'all') await deleteAll(); else await deleteGame(id);
+      removePhotos(paths);                                     // also delete the photo files
       data.games = await loadGames();
     } catch (e) { toast('Could not delete'); console.error(e); }
     render(); return;
